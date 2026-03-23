@@ -20,6 +20,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatType, ParseMode
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -59,11 +60,14 @@ STATE_WAIT_LABEL = 2
 db = Database(DB_PATH)
 PROXY_URL = os.getenv("PROXY_URL", "")
 tron_monitor = TronMonitor(api_key=TRONGRID_API_KEY, poll_interval=POLL_INTERVAL, proxy=PROXY_URL)
+ENERGY_TRX_ADDRESS = os.getenv("ENERGY_TRX_ADDRESS", "")
+TG_PREMIUM_URL = os.getenv("TG_PREMIUM_URL", "")
 
 # 主键盘菜单
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["📡 添加监听", "📋 监听列表", "🗑 删除监听"],
+        ["⚡️ 能量租赁", "🌟 电报会员", "💰 实时U价"],
         ["👤 查用户ID", "📢 查频道ID", "👥 查群组ID"],
     ],
     resize_keyboard=True,
@@ -393,6 +397,197 @@ async def handle_cancel_keyboard(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 
+# ======================== 能量租赁 ========================
+
+
+async def energy_rental(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """⚡️ 能量租赁"""
+    if not ENERGY_TRX_ADDRESS:
+        await update.message.reply_text(
+            "❌ 未配置能量租赁地址，请在 .env 中设置 ENERGY_TRX_ADDRESS。",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    await update.message.reply_text(
+        "【⚡️能量闪租】\n\n"
+        "🟩 转入 <b>3  TRX</b> = 免费 <b>1</b> 笔转账 对面有<b>U</b>\n\n"
+        "🟨 转入 <b>6  TRX</b> = 免费 <b>2</b> 笔转账 对面没<b>U</b>\n\n"
+        "✅对方没U或交易所需要两笔能量\n"
+        "🏵使用能量可以节省百分之90转U手续费\n"
+        "💎请在1小时内转账，否则过期回收\n"
+        "✅转账之前在这个地址转TRX一下即可\n"
+        "❗️点击地址即可复制\n\n"
+        f"<code>{ENERGY_TRX_ADDRESS}</code>\n\n"
+        "➖➖➖➖➖➖➖➖➖\n"
+        "祝老板们天天爆单，好运连连。",
+        parse_mode=ParseMode.HTML,
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
+# ======================== 电报会员 ========================
+
+
+async def tg_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🌟 电报会员"""
+    if not TG_PREMIUM_URL:
+        await update.message.reply_text(
+            "❌ 未配置电报会员链接，请在 .env 中设置 TG_PREMIUM_URL。",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🌟 前往开通电报会员", url=TG_PREMIUM_URL)]]
+    )
+    await update.message.reply_text(
+        "🌟 <b>电报会员</b>\n\n"
+        "点击下方按钮前往开通 Telegram Premium：",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+# ======================== 实时U价 ========================
+
+
+async def usdt_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """💰 实时U价 - 查询 C2C 商户汇率"""
+    await update.message.reply_text("💰 正在查询实时 USDT 汇率，请稍候...")
+
+    try:
+        import httpx
+
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+        binance_url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+
+        results = {}
+        async with httpx.AsyncClient(timeout=15, headers=headers) as client:
+            for trade_type, label in [("SELL", "buy"), ("BUY", "sell")]:
+                r = await client.post(binance_url, json={
+                    "fiat": "CNY", "page": 1, "rows": 10, "tradeType": trade_type,
+                    "asset": "USDT", "countries": [], "proMerchantAds": False,
+                    "publisherType": None, "payTypes": [],
+                })
+                data = r.json()
+                results[label] = data.get("data", [])
+
+        sell_orders = results.get("buy", [])  # 商户卖U给你
+        buy_orders = results.get("sell", [])  # 商户买你的U
+
+        if not sell_orders and not buy_orders:
+            await update.message.reply_text(
+                "❌ 暂无商户挂单数据。",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
+
+        text = "[ 实时报价 - USDT/CNY ]\n\n"
+
+        if sell_orders:
+            text += "<b>📗 买入U（商户出售）</b>\n"
+            for order in sell_orders[:5]:
+                adv = order.get("adv", {})
+                advertiser = order.get("advertiser", {})
+                price = adv.get("price", "--")
+                nick = advertiser.get("nickName", "未知")
+                text += f"<b>{price}</b>    <code>{nick}</code>\n"
+
+            # 三档价格
+            if len(sell_orders) >= 3:
+                p1 = sell_orders[0].get("adv", {}).get("price", "0")
+                p2 = sell_orders[1].get("adv", {}).get("price", "0")
+                p3 = sell_orders[2].get("adv", {}).get("price", "0")
+                try:
+                    avg = round((float(p1) + float(p2) + float(p3)) / 3, 2)
+                except (ValueError, ZeroDivisionError):
+                    avg = p1
+                text += f"\n实时价格 (三档)：\n1.0 * {avg} = <b>{avg} CNY</b>\n"
+
+        if buy_orders:
+            text += f"\n<b>📕 卖出U（商户收购）</b>\n"
+            for order in buy_orders[:5]:
+                adv = order.get("adv", {})
+                advertiser = order.get("advertiser", {})
+                price = adv.get("price", "--")
+                nick = advertiser.get("nickName", "未知")
+                text += f"<b>{price}</b>    <code>{nick}</code>\n"
+
+        text += "\n⏱ 数据来源: Binance C2C"
+
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=MAIN_KEYBOARD,
+        )
+    except asyncio.TimeoutError:
+        await update.message.reply_text(
+            "❌ 查询超时，请稍后再试。",
+            reply_markup=MAIN_KEYBOARD,
+        )
+    except Exception as e:
+        logger.error(f"查询 USDT 汇率异常: {e}")
+        await update.message.reply_text(
+            "❌ 查询失败，请稍后再试。",
+            reply_markup=MAIN_KEYBOARD,
+        )
+
+
+# ======================== U 换算计算器 ========================
+
+# 缓存汇率，避免每次都请求
+_rate_cache: dict = {"rate": None, "ts": 0}
+
+
+async def _get_usdt_rate() -> float | None:
+    """获取当前 USDT/CNY 汇率（取前三商户均价），带60秒缓存"""
+    import time as _time
+    now = _time.time()
+    if _rate_cache["rate"] and now - _rate_cache["ts"] < 60:
+        return _rate_cache["rate"]
+    try:
+        import httpx
+        headers = {"User-Agent": "Mozilla/5.0"}
+        async with httpx.AsyncClient(timeout=10, headers=headers) as client:
+            r = await client.post(
+                "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
+                json={"fiat": "CNY", "page": 1, "rows": 5, "tradeType": "SELL",
+                      "asset": "USDT", "countries": [], "proMerchantAds": False,
+                      "publisherType": None, "payTypes": []},
+            )
+        items = r.json().get("data", [])
+        prices = [float(i["adv"]["price"]) for i in items[:3] if i.get("adv", {}).get("price")]
+        if not prices:
+            return None
+        rate = round(sum(prices) / len(prices), 4)
+        _rate_cache["rate"] = rate
+        _rate_cache["ts"] = now
+        return rate
+    except Exception:
+        return None
+
+
+async def handle_usdt_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 100u / 1U 等输入，换算成人民币"""
+    import re
+    text = update.message.text.strip()
+    m = re.match(r"^([\d]+\.?[\d]*)\s*[uU]$", text)
+    if not m:
+        return
+    amount = float(m.group(1))
+    rate = await _get_usdt_rate()
+    if rate is None:
+        await update.message.reply_text("❌ 获取汇率失败，请稍后再试。")
+        return
+    cny = round(amount * rate, 2)
+    await update.message.reply_text(
+        f"💱 <b>{amount:g} USDT</b> ≈ <b>{cny:,.2f} CNY</b>\n"
+        f"<i>当前汇率: 1 USDT = {rate} CNY（Binance C2C 均价）</i>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 # ======================== 交易监控任务 ========================
 
 
@@ -504,21 +699,6 @@ async def send_tx_notification(
     except Exception as e:
         logger.error(f"发送通知失败: {e}")
 
-    # 如果配置了通知 Chat ID 且与当前 chat_id 不同，额外发一份
-    if NOTIFY_CHAT_ID:
-        try:
-            notify_id = int(NOTIFY_CHAT_ID)
-            if notify_id != chat_id:
-                await application.bot.send_message(
-                    chat_id=notify_id,
-                    text=message,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=keyboard,
-                    disable_web_page_preview=True,
-                )
-        except (ValueError, Exception) as e:
-            logger.error(f"发送额外通知失败: {e}")
-
 
 # ======================== 启动入口 ========================
 
@@ -567,6 +747,9 @@ def main():
         MessageHandler(filters.Regex(r"^👤 查用户ID$"), _make_fallback(get_user_id)),
         MessageHandler(filters.Regex(r"^📢 查频道ID$"), _make_fallback(get_channel_id)),
         MessageHandler(filters.Regex(r"^👥 查群组ID$"), _make_fallback(get_group_id)),
+        MessageHandler(filters.Regex(r"^⚡️ 能量租赁$"), _make_fallback(energy_rental)),
+        MessageHandler(filters.Regex(r"^🌟 电报会员$"), _make_fallback(tg_premium)),
+        MessageHandler(filters.Regex(r"^💰 实时U价$"), _make_fallback(usdt_price)),
     ]
 
     # 添加监听会话处理
@@ -607,6 +790,15 @@ def main():
     application.add_handler(
         MessageHandler(filters.Regex(r"^👥 查群组ID$"), get_group_id)
     )
+    application.add_handler(
+        MessageHandler(filters.Regex(r"^⚡️ 能量租赁$"), energy_rental)
+    )
+    application.add_handler(
+        MessageHandler(filters.Regex(r"^🌟 电报会员$"), tg_premium)
+    )
+    application.add_handler(
+        MessageHandler(filters.Regex(r"^💰 实时U价$"), usdt_price)
+    )
     application.add_handler(CallbackQueryHandler(delete_callback, pattern=r"^del:"))
     application.add_handler(
         MessageHandler(filters.StatusUpdate.CHAT_SHARED, handle_chat_shared)
@@ -614,6 +806,19 @@ def main():
     application.add_handler(
         MessageHandler(filters.Regex(r"^❌ 取消$"), handle_cancel_keyboard)
     )
+    # 隐藏功能：输入 100u / 1U 等自动换算人民币（放最后，避免拦截其他消息）
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_usdt_calc)
+    )
+
+    # 网络错误降级为 DEBUG，避免代理断线时刷屏 ERROR 日志
+    async def _handle_network_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if isinstance(context.error, (NetworkError, TimedOut)):
+            logger.debug("网络波动（已自动重连）: %s", context.error)
+        else:
+            raise context.error
+
+    application.add_error_handler(_handle_network_error)
 
     logger.info("正在启动 WalletMonitor Bot...")
     application.run_polling(drop_pending_updates=True)

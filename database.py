@@ -26,11 +26,12 @@ class Database:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS wallets (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        address TEXT NOT NULL UNIQUE,
+                        address TEXT NOT NULL,
                         label TEXT NOT NULL,
                         chat_id INTEGER NOT NULL,
                         last_tx_timestamp INTEGER DEFAULT 0,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE (address, chat_id)
                     )
                 """)
                 conn.commit()
