@@ -50,6 +50,8 @@ TPbsMyr7KsvdidADDC8k2345552223dddd
 
 [🔗 查看交易详情]
 ```
+<img width="505" height="473" alt="image" src="https://github.com/user-attachments/assets/db988be5-4b16-43ff-a292-1725a09a0708" />
+
 
 ## 🛠 环境要求
 
