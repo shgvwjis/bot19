@@ -13,7 +13,10 @@ from dotenv import load_dotenv
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    KeyboardButtonRequestChat,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     Update,
 )
 from telegram.constants import ChatType, ParseMode
@@ -26,6 +29,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 from database import Database
 from monitor import TronMonitor
@@ -217,8 +221,7 @@ async def list_monitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "📋 <b>您的监听列表：</b>\n\n"
     for i, w in enumerate(wallets, 1):
         addr = w["address"]
-        short_addr = f"{addr[:8]}...{addr[-10:]}"
-        text += f"<b>{i}.</b> {w['label']} | <code>{short_addr}</code>\n"
+        text += f"<b>{i}.</b> {w['label']}\n<code>{addr}</code>\n\n"
 
     await update.message.reply_text(
         text,
@@ -315,85 +318,79 @@ async def get_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """查询频道 ID"""
-    # 检查是否是转发的消息
-    if update.message.forward_origin:
-        # python-telegram-bot v20+ 使用 forward_origin
-        origin = update.message.forward_origin
-        origin_type = origin.type if hasattr(origin, 'type') else str(type(origin).__name__)
-
-        if hasattr(origin, 'chat'):
-            chat = origin.chat
-            await update.message.reply_text(
-                f"📢 <b>频道/来源信息</b>\n\n"
-                f"频道ID: <code>{chat.id}</code>\n"
-                f"频道名称: {chat.title or '未知'}",
-                parse_mode=ParseMode.HTML,
-                reply_markup=MAIN_KEYBOARD,
-            )
-            return
-        else:
-            await update.message.reply_text(
-                f"📢 消息来源类型: {origin_type}\n"
-                f"该来源类型暂不支持获取 ID。\n\n"
-                f"请转发一条<b>频道消息</b>给我以获取频道 ID。",
-                parse_mode=ParseMode.HTML,
-                reply_markup=MAIN_KEYBOARD,
-            )
-            return
-
+    """查询频道 ID - 弹出频道选择列表"""
+    keyboard = ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("📢 选择频道", request_chat=KeyboardButtonRequestChat(
+                request_id=1, chat_is_channel=True
+            ))],
+            [KeyboardButton("❌ 取消")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
     await update.message.reply_text(
         "📢 <b>查询频道 ID</b>\n\n"
-        "请将频道中的一条消息<b>转发</b>给我，\n"
-        "我将为您获取该频道的 ID。",
+        "请点击下方按钮，从列表中选择要查询的频道：",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """查询群组 ID - 弹出群组选择列表"""
+    keyboard = ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("👥 选择群组", request_chat=KeyboardButtonRequestChat(
+                request_id=2, chat_is_channel=False
+            ))],
+            [KeyboardButton("❌ 取消")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await update.message.reply_text(
+        "👥 <b>查询群组 ID</b>\n\n"
+        "请点击下方按钮，从列表中选择要查询的群组：",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+# ======================== 会话选择回调处理 ========================
+
+
+async def handle_chat_shared(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理用户通过选择器选择的频道或群组"""
+    chat_shared = update.message.chat_shared
+    request_id = chat_shared.request_id
+    chat_id = chat_shared.chat_id
+
+    if request_id == 1:
+        icon = "📢"
+        label = "频道"
+    else:
+        icon = "👥"
+        label = "群组"
+
+    title = ""
+    if chat_shared.title:
+        title = f"\n名称: {chat_shared.title}"
+
+    await update.message.reply_text(
+        f"{icon} <b>{label} ID</b>\n\n"
+        f"{label}ID: <code>{chat_id}</code>{title}",
         parse_mode=ParseMode.HTML,
         reply_markup=MAIN_KEYBOARD,
     )
 
 
-async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """查询群组 ID"""
-    chat = update.effective_chat
-
-    if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        await update.message.reply_text(
-            f"👥 <b>群组信息</b>\n\n"
-            f"群组ID: <code>{chat.id}</code>\n"
-            f"群组名称: {chat.title or '未知'}\n"
-            f"群组类型: {chat.type}",
-            parse_mode=ParseMode.HTML,
-            reply_markup=MAIN_KEYBOARD,
-        )
-    else:
-        await update.message.reply_text(
-            "👥 <b>查询群组 ID</b>\n\n"
-            "请在<b>群组中</b>发送此命令来获取群组 ID。\n"
-            f"当前聊天 ID: <code>{chat.id}</code>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=MAIN_KEYBOARD,
-        )
-
-
-# ======================== 转发消息处理 ========================
-
-
-async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理转发消息以获取频道 ID"""
-    if not update.message.forward_origin:
-        return
-
-    origin = update.message.forward_origin
-
-    if hasattr(origin, 'chat'):
-        chat = origin.chat
-        await update.message.reply_text(
-            f"📢 <b>来源信息</b>\n\n"
-            f"来源ID: <code>{chat.id}</code>\n"
-            f"名称: {chat.title or '未知'}\n"
-            f"类型: {chat.type}",
-            parse_mode=ParseMode.HTML,
-            reply_markup=MAIN_KEYBOARD,
-        )
+async def handle_cancel_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理取消按钮，恢复主键盘"""
+    await update.message.reply_text(
+        "已取消。",
+        reply_markup=MAIN_KEYBOARD,
+    )
 
 
 # ======================== 交易监控任务 ========================
@@ -544,7 +541,33 @@ def main():
     if not TRONGRID_API_KEY:
         logger.warning("未配置 TRONGRID_API_KEY，API 请求可能受限")
 
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    if PROXY_URL:
+        request = HTTPXRequest(
+            proxy=PROXY_URL,
+            connect_timeout=30.0,
+            read_timeout=30.0,
+            write_timeout=30.0,
+        )
+        application = Application.builder().token(BOT_TOKEN).request(request).post_init(post_init).build()
+    else:
+        application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+
+    # 包装菜单处理器：在会话中点击其他按钮时先结束会话再执行对应功能
+    def _make_fallback(handler_func):
+        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            context.user_data.pop("pending_address", None)
+            await handler_func(update, context)
+            return ConversationHandler.END
+        return wrapper
+
+    menu_fallback_handlers = [
+        MessageHandler(filters.Regex(r"^📡 添加监听$"), add_monitor_start),
+        MessageHandler(filters.Regex(r"^📋 监听列表$"), _make_fallback(list_monitors)),
+        MessageHandler(filters.Regex(r"^🗑 删除监听$"), _make_fallback(delete_monitor)),
+        MessageHandler(filters.Regex(r"^👤 查用户ID$"), _make_fallback(get_user_id)),
+        MessageHandler(filters.Regex(r"^📢 查频道ID$"), _make_fallback(get_channel_id)),
+        MessageHandler(filters.Regex(r"^👥 查群组ID$"), _make_fallback(get_group_id)),
+    ]
 
     # 添加监听会话处理
     conv_handler = ConversationHandler(
@@ -561,6 +584,7 @@ def main():
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
+            *menu_fallback_handlers,
         ],
     )
 
@@ -585,7 +609,10 @@ def main():
     )
     application.add_handler(CallbackQueryHandler(delete_callback, pattern=r"^del:"))
     application.add_handler(
-        MessageHandler(filters.FORWARDED, handle_forwarded_message)
+        MessageHandler(filters.StatusUpdate.CHAT_SHARED, handle_chat_shared)
+    )
+    application.add_handler(
+        MessageHandler(filters.Regex(r"^❌ 取消$"), handle_cancel_keyboard)
     )
 
     logger.info("正在启动 WalletMonitor Bot...")
